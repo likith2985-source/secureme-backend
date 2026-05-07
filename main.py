@@ -15,7 +15,23 @@ app.add_middleware(
 
 VIRUSTOTAL_API_KEY = "0a391695536864e06892ce0bfc05a9f3305c577213961fa6b9a598ea91d3e42c"
 
-RISKY_APPS = ["com.fake.spyware", "com.malware.virus", "com.suspicious.tracker"]
+RISKY_APPS = {
+    "com.fake.spyware": "Spyware - steals personal data",
+    "com.malware.virus": "Malware - damages your device",
+    "com.suspicious.tracker": "Tracker - monitors your location",
+    "com.android.vending.billing.InAppBillingService.COIN": "Fake billing service",
+    "com.google.security": "Fake Google app",
+    "com.whatsapp.update": "Fake WhatsApp updater",
+    "com.facebook.lite.hack": "Fake Facebook app",
+    "com.instagram.fake": "Fake Instagram app",
+    "com.android.system.update": "Fake system updater",
+    "com.phone.cleaner.fast": "Aggressive adware cleaner",
+    "com.battery.saver.fake": "Fake battery saver",
+    "com.free.vpn.super": "Suspicious VPN - data harvester",
+    "com.virus.cleaner.antivirus": "Fake antivirus - actually malware",
+    "com.spy.keylogger": "Keylogger - records keystrokes",
+    "com.root.access.tool": "Unauthorized root access tool",
+}
 
 @app.get("/")
 def home():
@@ -100,6 +116,33 @@ async def scan_file(data: dict):
         "status": status,
     }
 
+@app.post("/scan-apps")
+def scan_apps(data: dict):
+    apps = data.get("apps", [])
+    risky_found = []
+    safe_apps = []
+
+    for app in apps:
+        app = app.strip().lower()
+        if app in RISKY_APPS:
+            risky_found.append({
+                "package": app,
+                "reason": RISKY_APPS[app]
+            })
+        else:
+            safe_apps.append(app)
+
+    app_score = max(0, 100 - (len(risky_found) * 25))
+
+    return {
+        "total_scanned": len(apps),
+        "risky_count": len(risky_found),
+        "risky_apps": risky_found,
+        "safe_count": len(safe_apps),
+        "app_score": app_score,
+        "status": "✅ All apps are safe!" if not risky_found else f"⚠️ {len(risky_found)} risky app(s) found!"
+    }
+
 @app.post("/cyber-health-score")
 def cyber_health_score(data: dict):
     password = data.get("password", "")
@@ -111,9 +154,8 @@ def cyber_health_score(data: dict):
     if re.search(r'[0-9]', password): pw_score += 25
     if re.search(r'[!@#$%^&*]', password): pw_score += 25
 
-    risky_found = [app for app in installed_apps if app in RISKY_APPS]
+    risky_found = [a for a in installed_apps if a in RISKY_APPS]
     app_score = max(0, 100 - (len(risky_found) * 30))
-
     final_score = int((pw_score * 0.4) + (app_score * 0.6))
 
     recommendations = []
