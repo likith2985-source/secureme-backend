@@ -174,6 +174,78 @@ def cyber_health_score(data: dict):
         "recommendations": recommendations,
         "status": "Safe ✅" if final_score >= 75 else "Moderate ⚠️" if final_score >= 50 else "High Risk ❌"
     }
+DANGEROUS_PERMISSIONS = {
+    "android.permission.READ_CONTACTS": "Reads your contacts",
+    "android.permission.WRITE_CONTACTS": "Modifies your contacts",
+    "android.permission.ACCESS_FINE_LOCATION": "Tracks your exact location",
+    "android.permission.ACCESS_COARSE_LOCATION": "Tracks your approximate location",
+    "android.permission.RECORD_AUDIO": "Records audio from microphone",
+    "android.permission.CAMERA": "Access your camera",
+    "android.permission.READ_CALL_LOG": "Reads your call history",
+    "android.permission.WRITE_CALL_LOG": "Modifies your call history",
+    "android.permission.PROCESS_OUTGOING_CALLS": "Intercepts your calls",
+    "android.permission.READ_SMS": "Reads your SMS messages",
+    "android.permission.SEND_SMS": "Sends SMS messages",
+    "android.permission.RECEIVE_SMS": "Receives SMS messages",
+    "android.permission.READ_EXTERNAL_STORAGE": "Reads your files",
+    "android.permission.WRITE_EXTERNAL_STORAGE": "Modifies your files",
+    "android.permission.GET_ACCOUNTS": "Access your accounts",
+    "android.permission.USE_BIOMETRIC": "Uses your fingerprint/face",
+    "android.permission.BODY_SENSORS": "Reads body sensor data",
+    "android.permission.ACCESS_BACKGROUND_LOCATION": "Tracks location in background",
+    "android.permission.READ_PHONE_STATE": "Reads phone identity",
+    "android.permission.CALL_PHONE": "Makes phone calls",
+}
+
+@app.post("/analyze-permissions")
+def analyze_permissions(data: dict):
+    apps = data.get("apps", [])
+    result = []
+    total_risk_score = 0
+
+    for app_data in apps:
+        app_name = app_data.get("name", "")
+        package = app_data.get("package", "")
+        permissions = app_data.get("permissions", [])
+
+        dangerous = []
+        for perm in permissions:
+            if perm in DANGEROUS_PERMISSIONS:
+                dangerous.append({
+                    "permission": perm.replace("android.permission.", ""),
+                    "description": DANGEROUS_PERMISSIONS[perm]
+                })
+
+        risk_level = "Low"
+        risk_score = 0
+        if len(dangerous) >= 8:
+            risk_level = "High"
+            risk_score = 30
+        elif len(dangerous) >= 4:
+            risk_level = "Medium"
+            risk_score = 15
+        else:
+            risk_score = 5
+
+        total_risk_score += risk_score
+
+        if dangerous:
+            result.append({
+                "name": app_name,
+                "package": package,
+                "dangerous_count": len(dangerous),
+                "risk_level": risk_level,
+                "dangerous_permissions": dangerous
+            })
+
+    result.sort(key=lambda x: x["dangerous_count"], reverse=True)
+
+    return {
+        "total_apps_scanned": len(apps),
+        "risky_apps_count": len(result),
+        "overall_risk": "High" if total_risk_score > 100 else "Medium" if total_risk_score > 50 else "Low",
+        "apps": result[:20]
+    }
 
 @app.get("/health")
 def health_check():
