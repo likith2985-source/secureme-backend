@@ -175,28 +175,98 @@ def cyber_health_score(data: dict):
         "status": "Safe ✅" if final_score >= 75 else "Moderate ⚠️" if final_score >= 50 else "High Risk ❌"
     }
 DANGEROUS_PERMISSIONS = {
-    "android.permission.READ_CONTACTS": "Reads your contacts",
-    "android.permission.WRITE_CONTACTS": "Modifies your contacts",
-    "android.permission.ACCESS_FINE_LOCATION": "Tracks your exact location",
+    # Location
+    "android.permission.ACCESS_FINE_LOCATION": "Tracks your exact GPS location",
     "android.permission.ACCESS_COARSE_LOCATION": "Tracks your approximate location",
-    "android.permission.RECORD_AUDIO": "Records audio from microphone",
-    "android.permission.CAMERA": "Access your camera",
-    "android.permission.READ_CALL_LOG": "Reads your call history",
-    "android.permission.WRITE_CALL_LOG": "Modifies your call history",
-    "android.permission.PROCESS_OUTGOING_CALLS": "Intercepts your calls",
-    "android.permission.READ_SMS": "Reads your SMS messages",
-    "android.permission.SEND_SMS": "Sends SMS messages",
-    "android.permission.RECEIVE_SMS": "Receives SMS messages",
-    "android.permission.READ_EXTERNAL_STORAGE": "Reads your files",
-    "android.permission.WRITE_EXTERNAL_STORAGE": "Modifies your files",
-    "android.permission.GET_ACCOUNTS": "Access your accounts",
-    "android.permission.USE_BIOMETRIC": "Uses your fingerprint/face",
-    "android.permission.BODY_SENSORS": "Reads body sensor data",
-    "android.permission.ACCESS_BACKGROUND_LOCATION": "Tracks location in background",
-    "android.permission.READ_PHONE_STATE": "Reads phone identity",
-    "android.permission.CALL_PHONE": "Makes phone calls",
-}
+    "android.permission.ACCESS_BACKGROUND_LOCATION": "Tracks location even when app is closed",
+    "android.permission.ACCESS_MOCK_LOCATION": "Can fake your GPS location",
 
+    # Contacts & Accounts
+    "android.permission.READ_CONTACTS": "Reads all your contacts",
+    "android.permission.WRITE_CONTACTS": "Can modify/delete your contacts",
+    "android.permission.GET_ACCOUNTS": "Access all accounts on device",
+    "android.permission.MANAGE_ACCOUNTS": "Can add/remove accounts",
+
+    # Phone & Calls
+    "android.permission.READ_PHONE_STATE": "Reads device ID and phone number",
+    "android.permission.READ_PHONE_NUMBERS": "Reads your phone number",
+    "android.permission.CALL_PHONE": "Makes calls without your knowledge",
+    "android.permission.ANSWER_PHONE_CALLS": "Can answer your calls",
+    "android.permission.READ_CALL_LOG": "Reads your entire call history",
+    "android.permission.WRITE_CALL_LOG": "Can modify your call history",
+    "android.permission.PROCESS_OUTGOING_CALLS": "Intercepts and redirects calls",
+    "android.permission.USE_SIP": "Makes internet calls",
+
+    # SMS & Messaging
+    "android.permission.READ_SMS": "Reads all your SMS messages",
+    "android.permission.SEND_SMS": "Sends SMS without your knowledge",
+    "android.permission.RECEIVE_SMS": "Intercepts incoming SMS",
+    "android.permission.RECEIVE_MMS": "Intercepts incoming MMS",
+    "android.permission.RECEIVE_WAP_PUSH": "Intercepts WAP messages",
+
+    # Camera & Microphone
+    "android.permission.CAMERA": "Access camera without notification",
+    "android.permission.RECORD_AUDIO": "Records audio/microphone secretly",
+    "android.permission.CAPTURE_AUDIO_OUTPUT": "Captures all audio output",
+    "android.permission.CAPTURE_SECURE_VIDEO_OUTPUT": "Captures secure video",
+
+    # Storage & Files
+    "android.permission.READ_EXTERNAL_STORAGE": "Reads all your files",
+    "android.permission.WRITE_EXTERNAL_STORAGE": "Can modify/delete your files",
+    "android.permission.MANAGE_EXTERNAL_STORAGE": "Full access to all storage",
+    "android.permission.ACCESS_MEDIA_LOCATION": "Access GPS in your photos",
+
+    # Biometrics & Security
+    "android.permission.USE_BIOMETRIC": "Uses fingerprint/face recognition",
+    "android.permission.USE_FINGERPRINT": "Access fingerprint sensor",
+    "android.permission.BODY_SENSORS": "Reads heart rate and body sensors",
+    "android.permission.BODY_SENSORS_BACKGROUND": "Reads body sensors in background",
+
+    # Network & Bluetooth
+    "android.permission.CHANGE_NETWORK_STATE": "Can change your network",
+    "android.permission.CHANGE_WIFI_STATE": "Can change WiFi settings",
+    "android.permission.ACCESS_WIFI_STATE": "Reads WiFi network info",
+    "android.permission.BLUETOOTH": "Access Bluetooth devices",
+    "android.permission.BLUETOOTH_ADMIN": "Controls Bluetooth settings",
+    "android.permission.BLUETOOTH_CONNECT": "Connects to Bluetooth devices",
+    "android.permission.BLUETOOTH_SCAN": "Scans for nearby Bluetooth devices",
+    "android.permission.NFC": "Access NFC chip",
+    "android.permission.TRANSMIT_IR": "Controls infrared transmitter",
+
+    # System & Device
+    "android.permission.MASTER_CLEAR": "Can factory reset your device",
+    "android.permission.REBOOT": "Can reboot your device",
+    "android.permission.MOUNT_UNMOUNT_FILESYSTEMS": "Can mount/unmount storage",
+    "android.permission.INSTALL_PACKAGES": "Can install apps silently",
+    "android.permission.DELETE_PACKAGES": "Can uninstall apps silently",
+    "android.permission.CHANGE_COMPONENT_ENABLED_STATE": "Can disable system components",
+    "android.permission.SET_PREFERRED_APPLICATIONS": "Changes default apps",
+    "android.permission.WRITE_SETTINGS": "Modifies system settings",
+    "android.permission.WRITE_SECURE_SETTINGS": "Modifies secure system settings",
+    "android.permission.DUMP": "Can dump system state data",
+    "android.permission.READ_LOGS": "Reads system logs",
+    "android.permission.PACKAGE_USAGE_STATS": "Tracks which apps you use",
+    "android.permission.BIND_ACCESSIBILITY_SERVICE": "Can read screen content",
+    "android.permission.BIND_DEVICE_ADMIN": "Device administrator privileges",
+    "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE": "Reads all notifications",
+    "android.permission.BIND_VPN_SERVICE": "Creates VPN connections",
+
+    # Calendar & Personal Data
+    "android.permission.READ_CALENDAR": "Reads your calendar events",
+    "android.permission.WRITE_CALENDAR": "Can modify your calendar",
+
+    # Activity Recognition
+    "android.permission.ACTIVITY_RECOGNITION": "Tracks physical activities",
+    "android.permission.HIGH_SAMPLING_RATE_SENSORS": "High frequency sensor access",
+
+    # Permissions that indicate spyware
+    "android.permission.RECEIVE_BOOT_COMPLETED": "Starts automatically on boot",
+    "android.permission.FOREGROUND_SERVICE": "Runs permanently in background",
+    "android.permission.REQUEST_INSTALL_PACKAGES": "Can install unknown apps",
+    "android.permission.SYSTEM_ALERT_WINDOW": "Draws over other apps",
+    "android.permission.DISABLE_KEYGUARD": "Can disable screen lock",
+    "android.permission.WAKE_LOCK": "Prevents phone from sleeping",
+}
 @app.post("/analyze-permissions")
 def analyze_permissions(data: dict):
     apps = data.get("apps", [])
@@ -216,16 +286,20 @@ def analyze_permissions(data: dict):
                     "description": DANGEROUS_PERMISSIONS[perm]
                 })
 
-        risk_level = "Low"
-        risk_score = 0
-        if len(dangerous) >= 8:
-            risk_level = "High"
-            risk_score = 30
-        elif len(dangerous) >= 4:
-            risk_level = "Medium"
-            risk_score = 15
-        else:
-            risk_score = 5
+    risk_level = "Low"
+risk_score = 0
+if len(dangerous) >= 15:
+    risk_level = "Critical"
+    risk_score = 40
+elif len(dangerous) >= 8:
+    risk_level = "High"
+    risk_score = 30
+elif len(dangerous) >= 4:
+    risk_level = "Medium"
+    risk_score = 15
+else:
+    risk_level = "Low"
+    risk_score = 5
 
         total_risk_score += risk_score
 
