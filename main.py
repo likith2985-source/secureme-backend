@@ -320,6 +320,68 @@ else:
         "overall_risk": "High" if total_risk_score > 100 else "Medium" if total_risk_score > 50 else "Low",
         "apps": result[:20]
     }
+@app.post("/analyze-wifi")
+def analyze_wifi(data: dict):
+    ssid = data.get("ssid", "")
+    security_type = data.get("security_type", "")
+    signal_strength = data.get("signal_strength", 0)
+    frequency = data.get("frequency", 0)
+
+    risks = []
+    score = 100
+
+    # Check security type
+    if security_type == "OPEN" or security_type == "":
+        risks.append("🔴 Open network — no encryption, anyone can intercept your data")
+        score -= 40
+    elif "WEP" in security_type:
+        risks.append("🔴 WEP encryption — extremely weak, easily hackable")
+        score -= 35
+    elif "WPA" in security_type and "WPA2" not in security_type and "WPA3" not in security_type:
+        risks.append("🟡 WPA encryption — outdated, vulnerable to attacks")
+        score -= 20
+    elif "WPA2" in security_type:
+        risks.append("🟢 WPA2 encryption — good security")
+        score -= 5
+    elif "WPA3" in security_type:
+        risks.append("🟢 WPA3 encryption — excellent security")
+
+    # Check signal strength
+    if signal_strength < -80:
+        risks.append("🟡 Weak signal — connection may be unstable")
+        score -= 10
+    elif signal_strength > -50:
+        risks.append("🟢 Strong signal — good connection")
+
+    # Check frequency
+    if frequency == 2400 or frequency == 2:
+        risks.append("🟡 2.4GHz band — more interference, slower speeds")
+    elif frequency == 5000 or frequency == 5:
+        risks.append("🟢 5GHz band — faster and less congested")
+
+    # Check for suspicious SSIDs
+    suspicious_keywords = ["free", "public", "guest", "hack", "test", "open", "wifi", "hotspot"]
+    if any(keyword in ssid.lower() for keyword in suspicious_keywords):
+        risks.append("⚠️ Suspicious network name — possible honeypot attack")
+        score -= 20
+
+    score = max(0, score)
+
+    if score >= 75:
+        status = "✅ Safe Network"
+    elif score >= 50:
+        status = "⚠️ Moderate Risk"
+    else:
+        status = "❌ Dangerous Network"
+
+    return {
+        "ssid": ssid,
+        "score": score,
+        "status": status,
+        "security_type": security_type,
+        "risks": risks,
+        "recommendation": "Avoid using this network for sensitive activities" if score < 75 else "Safe to use"
+    }
 
 @app.get("/health")
 def health_check():
