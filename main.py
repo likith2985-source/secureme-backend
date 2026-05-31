@@ -308,24 +308,22 @@ def analyze_permissions(data: dict):
                     "description": DANGEROUS_PERMISSIONS[perm]
                 })
 
-    risk_level = "Low"
-risk_score = 0
-if len(dangerous) >= 15:
-    risk_level = "Critical"
-    risk_score = 40
-elif len(dangerous) >= 8:
-    risk_level = "High"
-    risk_score = 30
-elif len(dangerous) >= 4:
-    risk_level = "Medium"
-    risk_score = 15
-else:
-    risk_level = "Low"
-    risk_score = 5
+        if len(dangerous) >= 15:
+            risk_level = "Critical"
+            risk_score = 40
+        elif len(dangerous) >= 8:
+            risk_level = "High"
+            risk_score = 30
+        elif len(dangerous) >= 4:
+            risk_level = "Medium"
+            risk_score = 15
+        else:
+            risk_level = "Low"
+            risk_score = 5
 
-    total_risk_score += risk_score
+        total_risk_score += risk_score
 
-    if dangerous:
+        if dangerous:
             result.append({
                 "name": app_name,
                 "package": package,
