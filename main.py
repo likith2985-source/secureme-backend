@@ -3,6 +3,25 @@ from fastapi.middleware.cors import CORSMiddleware
 import re
 import hashlib
 import httpx
+import sqlite3
+import uuid
+from datetime import datetime
+def init_db():
+    conn = sqlite3.connect('secureme.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS scan_results (
+        id TEXT PRIMARY KEY,
+        device_id TEXT,
+        scan_type TEXT,
+        score INTEGER,
+        status TEXT,
+        details TEXT,
+        created_at TEXT
+    )''')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 app = FastAPI()
 
@@ -382,6 +401,47 @@ def analyze_wifi(data: dict):
         "risks": risks,
         "recommendation": "Avoid using this network for sensitive activities" if score < 75 else "Safe to use"
     }
+@app.post("/save-scan")
+def save_scan(data: dict):
+    device_id = data.get("device_id", "unknown")
+    scan_type = data.get("scan_type", "")
+    score = data.get("score", 0)
+    status = data.get("status", "")
+    details = data.get("details", "{}")
+    
+    scan_id = str(uuid.uuid4())
+    created_at = datetime.now().isoformat()
+    
+    conn = sqlite3.connect('secureme.db')
+    c = conn.cursor()
+    c.execute("INSERT INTO scan_results VALUES (?,?,?,?,?,?,?)",
+              (scan_id, device_id, scan_type, score, status, str(details), created_at))
+    conn.commit()
+    conn.close()
+    
+    return {"id": scan_id, "message": "Scan saved successfully"}
+
+@app.get("/get-scans/{device_id}")
+def get_scans(device_id: str):
+    conn = sqlite3.connect('secureme.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM scan_results WHERE device_id=? ORDER BY created_at DESC LIMIT 20", (device_id,))
+    rows = c.fetchall()
+    conn.close()
+    
+    scans = []
+    for row in rows:
+        scans.append({
+            "id": row[0],
+            "device_id": row[1],
+            "scan_type": row[2],
+            "score": row[3],
+            "status": row[4],
+            "details": row[5],
+            "created_at": row[6]
+        })
+    
+    return {"scans": scans, "total": len(scans)}
 
 @app.get("/health")
 def health_check():
