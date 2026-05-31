@@ -323,9 +323,9 @@ else:
     risk_level = "Low"
     risk_score = 5
 
-        total_risk_score += risk_score
+    total_risk_score += risk_score
 
-        if dangerous:
+    if dangerous:
             result.append({
                 "name": app_name,
                 "package": package,
