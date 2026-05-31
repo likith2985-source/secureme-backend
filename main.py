@@ -6,6 +6,11 @@ import httpx
 import sqlite3
 import uuid
 from datetime import datetime
+
+
+
+app = FastAPI()
+
 def init_db():
     conn = sqlite3.connect('secureme.db')
     c = conn.cursor()
@@ -22,8 +27,6 @@ def init_db():
     conn.close()
 
 init_db()
-
-app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -442,6 +445,32 @@ def get_scans(device_id: str):
         })
     
     return {"scans": scans, "total": len(scans)}
+
+@app.post("/save-scan")
+def save_scan(data: dict):
+    conn = sqlite3.connect('secureme.db')
+    c = conn.cursor()
+    c.execute("INSERT INTO scan_results VALUES (?,?,?,?,?,?,?)", (
+        str(uuid.uuid4()),
+        data.get("device_id", "unknown"),
+        data.get("scan_type", ""),
+        data.get("score", 0),
+        data.get("status", ""),
+        str(data.get("details", "")),
+        datetime.now().isoformat()
+    ))
+    conn.commit()
+    conn.close()
+    return {"message": "Saved"}
+
+@app.get("/get-scans/{device_id}")
+def get_scans(device_id: str):
+    conn = sqlite3.connect('secureme.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM scan_results WHERE device_id=? ORDER BY created_at DESC LIMIT 20", (device_id,))
+    rows = c.fetchall()
+    conn.close()
+    return {"scans": [{"id":r[0],"device_id":r[1],"scan_type":r[2],"score":r[3],"status":r[4],"details":r[5],"created_at":r[6]} for r in rows], "total": len(rows)}
 
 @app.get("/health")
 def health_check():
