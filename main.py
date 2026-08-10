@@ -28,6 +28,21 @@ def init_db():
 
 init_db()
 
+def init_auth_db():
+    conn = sqlite3.connect('secureme.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT UNIQUE,
+        password TEXT,
+        name TEXT,
+        created_at TEXT
+    )''')
+    conn.commit()
+    conn.close()
+
+init_auth_db()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -469,6 +484,41 @@ def get_scans(device_id: str):
     rows = c.fetchall()
     conn.close()
     return {"scans": [{"id":r[0],"device_id":r[1],"scan_type":r[2],"score":r[3],"status":r[4],"details":r[5],"created_at":r[6]} for r in rows], "total": len(rows)}
+
+import hashlib
+
+@app.post("/register")
+def register(data: dict):
+    email = data.get("email", "")
+    password = data.get("password", "")
+    name = data.get("name", "")
+    if not email or not password:
+        return {"error": "Email and password required"}
+    hashed = hashlib.sha256(password.encode()).hexdigest()
+    try:
+        conn = sqlite3.connect('secureme.db')
+        c = conn.cursor()
+        c.execute("INSERT INTO users VALUES (?,?,?,?,?)",
+            (str(uuid.uuid4()), email, hashed, name, datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+        return {"message": "Registered successfully"}
+    except:
+        return {"error": "Email already exists"}
+
+@app.post("/login")
+def login(data: dict):
+    email = data.get("email", "")
+    password = data.get("password", "")
+    hashed = hashlib.sha256(password.encode()).hexdigest()
+    conn = sqlite3.connect('secureme.db')
+    c = conn.cursor()
+    c.execute("SELECT id, name, email FROM users WHERE email=? AND password=?", (email, hashed))
+    user = c.fetchone()
+    conn.close()
+    if user:
+        return {"id": user[0], "name": user[1], "email": user[2], "token": user[0]}
+    return {"error": "Invalid email or password"}
 
 @app.get("/health")
 def health_check():
