@@ -111,10 +111,11 @@ def check_password(data: dict):
 
 @app.post("/scan-file")
 async def scan_file(data: dict):
-    file_content = data.get("content", "")
-    file_name = data.get("name", "unknown")
-    file_hash = hashlib.sha256(file_content.encode()).hexdigest()
+    file_hash = data.get("file_hash", "")
+    file_name = data.get("file_name", "unknown")
 
+    if not file_hash:
+        return {"error": "file_hash required"}
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
