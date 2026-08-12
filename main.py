@@ -3,16 +3,47 @@ from fastapi.middleware.cors import CORSMiddleware
 import re
 import hashlib
 import httpx
-import sqlite3
+import pg8000
 import uuid
+import os
+import ssl
+from urllib.parse import urlparse
 from datetime import datetime
+from dotenv import load_dotenv
 
-
+load_dotenv()
 
 app = FastAPI()
 
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+def get_db_connection():
+    if not DATABASE_URL:
+        raise ValueError("DATABASE_URL is not set. Please configure it in your .env file.")
+    
+    result = urlparse(DATABASE_URL)
+    username = result.username
+    password = result.password
+    database = result.path[1:]
+    hostname = result.hostname
+    port = result.port or 5432
+    
+    # Establish connection with SSL for Supabase compatibility
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    
+    return pg8000.connect(
+        user=username,
+        password=password,
+        host=hostname,
+        port=port,
+        database=database,
+        ssl_context=ssl_context
+    )
+
 def init_db():
-    conn = sqlite3.connect('secureme.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS scan_results (
         id TEXT PRIMARY KEY,
@@ -26,10 +57,8 @@ def init_db():
     conn.commit()
     conn.close()
 
-init_db()
-
 def init_auth_db():
-    conn = sqlite3.connect('secureme.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
@@ -41,7 +70,12 @@ def init_auth_db():
     conn.commit()
     conn.close()
 
-init_auth_db()
+try:
+    init_db()
+    init_auth_db()
+    print("Database tables initialized successfully.")
+except Exception as e:
+    print(f"Warning: Database initialization failed. Check your DATABASE_URL in .env. Error: {e}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -429,9 +463,9 @@ def save_scan(data: dict):
     scan_id = str(uuid.uuid4())
     created_at = datetime.now().isoformat()
     
-    conn = sqlite3.connect('secureme.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("INSERT INTO scan_results VALUES (?,?,?,?,?,?,?)",
+    c.execute("INSERT INTO scan_results VALUES (%s, %s, %s, %s, %s, %s, %s)",
               (scan_id, device_id, scan_type, score, status, str(details), created_at))
     conn.commit()
     conn.close()
@@ -440,9 +474,9 @@ def save_scan(data: dict):
 
 @app.get("/get-scans/{device_id}")
 def get_scans(device_id: str):
-    conn = sqlite3.connect('secureme.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT * FROM scan_results WHERE device_id=? ORDER BY created_at DESC LIMIT 20", (device_id,))
+    c.execute("SELECT * FROM scan_results WHERE device_id=%s ORDER BY created_at DESC LIMIT 20", (device_id,))
     rows = c.fetchall()
     conn.close()
     
@@ -460,34 +494,6 @@ def get_scans(device_id: str):
     
     return {"scans": scans, "total": len(scans)}
 
-@app.post("/save-scan")
-def save_scan(data: dict):
-    conn = sqlite3.connect('secureme.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO scan_results VALUES (?,?,?,?,?,?,?)", (
-        str(uuid.uuid4()),
-        data.get("device_id", "unknown"),
-        data.get("scan_type", ""),
-        data.get("score", 0),
-        data.get("status", ""),
-        str(data.get("details", "")),
-        datetime.now().isoformat()
-    ))
-    conn.commit()
-    conn.close()
-    return {"message": "Saved"}
-
-@app.get("/get-scans/{device_id}")
-def get_scans(device_id: str):
-    conn = sqlite3.connect('secureme.db')
-    c = conn.cursor()
-    c.execute("SELECT * FROM scan_results WHERE device_id=? ORDER BY created_at DESC LIMIT 20", (device_id,))
-    rows = c.fetchall()
-    conn.close()
-    return {"scans": [{"id":r[0],"device_id":r[1],"scan_type":r[2],"score":r[3],"status":r[4],"details":r[5],"created_at":r[6]} for r in rows], "total": len(rows)}
-
-import hashlib
-
 @app.post("/register")
 def register(data: dict):
     email = data.get("email", "")
@@ -497,14 +503,18 @@ def register(data: dict):
         return {"error": "Email and password required"}
     hashed = hashlib.sha256(password.encode()).hexdigest()
     try:
-        conn = sqlite3.connect('secureme.db')
+        conn = get_db_connection()
         c = conn.cursor()
-        c.execute("INSERT INTO users VALUES (?,?,?,?,?)",
+        c.execute("INSERT INTO users VALUES (%s, %s, %s, %s, %s)",
             (str(uuid.uuid4()), email, hashed, name, datetime.now().isoformat()))
         conn.commit()
         conn.close()
         return {"message": "Registered successfully"}
-    except:
+    except Exception as e:
+        try:
+            conn.close()
+        except:
+            pass
         return {"error": "Email already exists"}
 
 @app.post("/login")
@@ -512,9 +522,9 @@ def login(data: dict):
     email = data.get("email", "")
     password = data.get("password", "")
     hashed = hashlib.sha256(password.encode()).hexdigest()
-    conn = sqlite3.connect('secureme.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, name, email FROM users WHERE email=? AND password=?", (email, hashed))
+    c.execute("SELECT id, name, email FROM users WHERE email=%s AND password=%s", (email, hashed))
     user = c.fetchone()
     conn.close()
     if user:
