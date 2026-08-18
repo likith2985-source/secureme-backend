@@ -508,6 +508,25 @@ def login(data: dict):
         return {"id": user[0], "name": user[1], "email": user[2], "token": user[0]}
     return {"error": "Invalid email or password"}
 
+@app.post("/forgot-password")
+async def forgot_password(data: dict):
+    email = data.get("email", "")
+    if not email:
+        return {"error": "Email required"}
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.post(
+                "https://cyshlloaordhtsuktrzj.supabase.co/auth/v1/recover",
+                headers={
+                    "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN5c2hsbG9hb3JkaHRzdWt0cnpqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY1MDUyNjAsImV4cCI6MjEwMjA4MTI2MH0.3xbImQcXi-GjUMN5Y__4Qg5vdUtdLd9kohaxPyuu6Go",
+                    "Content-Type": "application/json"
+                },
+                json={"email": email}
+            )
+            return {"message": "If this email exists, a reset link has been sent."}
+    except:
+        return {"error": "Connection error"}
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "score": 75}
