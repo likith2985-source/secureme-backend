@@ -3,13 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 import re
 import hashlib
 import httpx
-import pg8000
 import uuid
-import os
-import ssl
-from urllib.parse import urlparse
+import os   
 from datetime import datetime
 from dotenv import load_dotenv
+import psycopg2
+from urllib.parse import urlparse
+
 
 load_dotenv()
 
@@ -18,30 +18,7 @@ app = FastAPI()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 def get_db_connection():
-    if not DATABASE_URL:
-        raise ValueError("DATABASE_URL is not set. Please configure it in your .env file.")
-    
-    result = urlparse(DATABASE_URL)
-    username = result.username
-    password = result.password
-    database = result.path[1:]
-    hostname = result.hostname
-    port = result.port or 5432
-    
-    # Establish connection with SSL for Supabase compatibility
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-    
-    return pg8000.connect(
-        user=username,
-        password=password,
-        host=hostname,
-        port=port,
-        database=database,
-        ssl_context=ssl_context
-    )
-
+    return psycopg2.connect(DATABASE_URL, sslmode='require')
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
