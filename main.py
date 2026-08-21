@@ -12,38 +12,49 @@ from urllib.parse import urlparse
 
 
 import random
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 load_dotenv()
 
 app = FastAPI()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-SMTP_EMAIL = os.getenv("SMTP_EMAIL", "urikeney@gmail.com")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
+BREVO_SENDER_EMAIL = os.getenv("BREVO_SENDER_EMAIL", "urikeney@gmail.com")
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL, sslmode='require')
 
-def send_email(to_email: str, subject: str, html_body: str):
-    if not SMTP_PASSWORD:
-        print("Warning: SMTP_PASSWORD is not set.")
-        return False, "SMTP_PASSWORD environment variable is not configured"
+async def send_email(to_email: str, subject: str, html_body: str):
+    if not BREVO_API_KEY:
+        print("Warning: BREVO_API_KEY is not set.")
+        return False, "BREVO_API_KEY environment variable is not configured"
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = f"SecureMe <{SMTP_EMAIL}>"
-        msg["To"] = to_email
-        msg.attach(MIMEText(html_body, "html"))
-        
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
-            server.login(SMTP_EMAIL, SMTP_PASSWORD.replace(" ", ""))
-            server.sendmail(SMTP_EMAIL, to_email, msg.as_string())
-        return True, "Email sent successfully"
+        async with httpx.AsyncClient() as client:
+            res = await client.post(
+                "https://api.brevo.com/v3/smtp/email",
+                headers={
+                    "api-key": BREVO_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "sender": {"name": "SecureMe", "email": BREVO_SENDER_EMAIL},
+                    "to": [{"email": to_email}],
+                    "subject": subject,
+                    "htmlContent": html_body
+                },
+                timeout=10
+            )
+            if res.status_code in [200, 201]:
+                return True, "Email sent successfully"
+            else:
+                try:
+                    err = res.json().get("message", res.text)
+                except:
+                    err = res.text
+                print(f"Brevo Error ({res.status_code}): {err}")
+                return False, err
     except Exception as e:
-        print(f"Failed to send email via Gmail SMTP: {e}")
+        print(f"Failed to send email via Brevo: {e}")
         return False, str(e)
 
 def generate_otp():
@@ -565,7 +576,7 @@ async def register(data: dict):
       <p style="color: #9ca3af; font-size: 12px; text-align: center;">If you didn't create a SecureMe account, you can safely ignore this email.</p>
     </div>
     """
-    sent, msg = send_email(email, "Verify your SecureMe Account", html)
+    sent, msg = await send_email(email, "Verify your SecureMe Account", html)
     if not sent:
         return {"error": f"Email delivery failed: {msg}"}
         
@@ -606,7 +617,7 @@ def verify_email(data: dict):
     }
 
 @app.post("/resend-verification")
-def resend_verification(data: dict):
+async def resend_verification(data: dict):
     email = data.get("email", "").strip().lower()
     if not email:
         return {"error": "Email is required"}
@@ -633,7 +644,7 @@ def resend_verification(data: dict):
       <div style="background: #EEF2FF; padding: 16px; border-radius: 8px; text-align: center; font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #4B4FD9; margin: 20px 0;">{otp}</div>
     </div>
     """
-    sent, msg = send_email(email, "Your SecureMe Verification Code", html)
+    sent, msg = await send_email(email, "Your SecureMe Verification Code", html)
     if not sent:
         return {"error": f"Email delivery failed: {msg}"}
         
@@ -659,7 +670,7 @@ def login(data: dict):
     return {"error": "Invalid email or password"}
 
 @app.post("/forgot-password")
-def forgot_password(data: dict):
+async def forgot_password(data: dict):
     email = data.get("email", "").strip().lower()
     if not email:
         return {"error": "Email is required"}
@@ -687,7 +698,7 @@ def forgot_password(data: dict):
       <p style="color: #9ca3af; font-size: 12px; text-align: center;">If you didn't request a password reset, you can safely ignore this email.</p>
     </div>
     """
-    sent, msg = send_email(email, "SecureMe Password Reset Code", html)
+    sent, msg = await send_email(email, "SecureMe Password Reset Code", html)
     if not sent:
         return {"error": f"Email delivery failed: {msg}"}
     return {"message": "Password reset code sent to your email", "email": email}
