@@ -40,10 +40,15 @@ async def send_resend_email(to_email: str, subject: str, html_body: str):
                 },
                 timeout=10
             )
-            return resp.status_code in [200, 201]
+            if resp.status_code in [200, 201]:
+                return True, "Email sent successfully"
+            else:
+                err = resp.json().get("message", "Resend API error")
+                print(f"Resend Error ({resp.status_code}): {err}")
+                return False, err
     except Exception as e:
         print(f"Failed to send email via Resend: {e}")
-        return False
+        return False, str(e)
 
 def generate_otp():
     return str(random.randint(100000, 999999))
@@ -72,13 +77,20 @@ def init_auth_db():
         password TEXT,
         name TEXT,
         created_at TEXT,
-        is_verified BOOLEAN DEFAULT FALSE,
+        is_verified BOOLEAN DEFAULT TRUE,
         verification_code TEXT,
         reset_code TEXT,
         code_expires_at TEXT
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS pending_registrations (
+        email TEXT PRIMARY KEY,
+        password TEXT,
+        name TEXT,
+        verification_code TEXT,
+        created_at TEXT
+    )''')
     try:
-        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE;")
+        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT TRUE;")
         c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_code TEXT;")
         c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_code TEXT;")
         c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS code_expires_at TEXT;")
@@ -527,21 +539,23 @@ async def register(data: dict):
     
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, is_verified FROM users WHERE email=%s", (email,))
+    # Check if already a registered & verified user
+    c.execute("SELECT id FROM users WHERE email=%s", (email,))
     existing = c.fetchone()
     
     if existing:
-        if existing[1]:  # already verified
-            conn.close()
-            return {"error": "An account with this email already exists. Please log in."}
-        else:
-            # Update password and generate new OTP
-            c.execute("UPDATE users SET password=%s, name=%s, verification_code=%s WHERE email=%s",
-                      (hashed, name, otp, email))
+        conn.close()
+        return {"error": "An account with this email already exists. Please log in."}
+        
+    # Store ONLY in pending_registrations until OTP is confirmed!
+    c.execute("SELECT email FROM pending_registrations WHERE email=%s", (email,))
+    pending = c.fetchone()
+    if pending:
+        c.execute("UPDATE pending_registrations SET password=%s, name=%s, verification_code=%s, created_at=%s WHERE email=%s",
+                  (hashed, name, otp, datetime.now().isoformat(), email))
     else:
-        # Create new unverified user
-        c.execute("INSERT INTO users (id, email, password, name, created_at, is_verified, verification_code) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                  (str(uuid.uuid4()), email, hashed, name, datetime.now().isoformat(), False, otp))
+        c.execute("INSERT INTO pending_registrations (email, password, name, verification_code, created_at) VALUES (%s, %s, %s, %s, %s)",
+                  (email, hashed, name, otp, datetime.now().isoformat()))
                   
     conn.commit()
     conn.close()
@@ -555,7 +569,10 @@ async def register(data: dict):
       <p style="color: #9ca3af; font-size: 12px; text-align: center;">If you didn't create a SecureMe account, you can safely ignore this email.</p>
     </div>
     """
-    await send_resend_email(email, "Verify your SecureMe Account", html)
+    sent, msg = await send_resend_email(email, "Verify your SecureMe Account", html)
+    if not sent:
+        return {"error": f"Email delivery failed: {msg}. Note: Resend test domain only sends to your registered email (urikeney@gmail.com)."}
+        
     return {"message": "Verification code sent to your email", "email": email}
 
 @app.post("/verify-email")
@@ -568,24 +585,28 @@ def verify_email(data: dict):
         
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, name, email, verification_code FROM users WHERE email=%s", (email,))
-    user = c.fetchone()
+    c.execute("SELECT email, password, name, verification_code FROM pending_registrations WHERE email=%s", (email,))
+    pending = c.fetchone()
     
-    if not user:
+    if not pending:
         conn.close()
-        return {"error": "User not found"}
+        return {"error": "No pending registration found for this email. Please register first."}
         
-    if str(user[3]).strip() != code:
+    if str(pending[3]).strip() != code:
         conn.close()
         return {"error": "Invalid verification code. Please check your email and try again."}
         
-    c.execute("UPDATE users SET is_verified=TRUE, verification_code=NULL WHERE email=%s", (email,))
+    # Move from pending_registrations to users table
+    user_id = str(uuid.uuid4())
+    c.execute("INSERT INTO users (id, email, password, name, created_at, is_verified) VALUES (%s, %s, %s, %s, %s, %s)",
+              (user_id, email, pending[1], pending[2], datetime.now().isoformat(), True))
+    c.execute("DELETE FROM pending_registrations WHERE email=%s", (email,))
     conn.commit()
     conn.close()
     
     return {
         "message": "Email verified successfully!",
-        "user": {"id": user[0], "name": user[1], "email": user[2], "token": user[0]}
+        "user": {"id": user_id, "name": pending[2], "email": email, "token": user_id}
     }
 
 @app.post("/resend-verification")
@@ -596,18 +617,15 @@ async def resend_verification(data: dict):
         
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, is_verified FROM users WHERE email=%s", (email,))
-    user = c.fetchone()
+    c.execute("SELECT email, name FROM pending_registrations WHERE email=%s", (email,))
+    pending = c.fetchone()
     
-    if not user:
+    if not pending:
         conn.close()
-        return {"error": "User not found"}
-    if user[1]:
-        conn.close()
-        return {"error": "Account is already verified. Please log in."}
+        return {"error": "No pending registration found for this email."}
         
     otp = generate_otp()
-    c.execute("UPDATE users SET verification_code=%s WHERE email=%s", (otp, email))
+    c.execute("UPDATE pending_registrations SET verification_code=%s WHERE email=%s", (otp, email))
     conn.commit()
     conn.close()
     
@@ -619,7 +637,10 @@ async def resend_verification(data: dict):
       <div style="background: #EEF2FF; padding: 16px; border-radius: 8px; text-align: center; font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #4B4FD9; margin: 20px 0;">{otp}</div>
     </div>
     """
-    await send_resend_email(email, "Your SecureMe Verification Code", html)
+    sent, msg = await send_resend_email(email, "Your SecureMe Verification Code", html)
+    if not sent:
+        return {"error": f"Email delivery failed: {msg}"}
+        
     return {"message": "New verification code sent to your email"}
 
 @app.post("/login")
