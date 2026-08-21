@@ -11,14 +11,43 @@ import psycopg2
 from urllib.parse import urlparse
 
 
+import random
+
 load_dotenv()
 
 app = FastAPI()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL, sslmode='require')
+
+async def send_resend_email(to_email: str, subject: str, html_body: str):
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "from": "SecureMe <onboarding@resend.dev>",
+                    "to": [to_email],
+                    "subject": subject,
+                    "html": html_body
+                },
+                timeout=10
+            )
+            return resp.status_code in [200, 201]
+    except Exception as e:
+        print(f"Failed to send email via Resend: {e}")
+        return False
+
+def generate_otp():
+    return str(random.randint(100000, 999999))
+
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
@@ -42,8 +71,19 @@ def init_auth_db():
         email TEXT UNIQUE,
         password TEXT,
         name TEXT,
-        created_at TEXT
+        created_at TEXT,
+        is_verified BOOLEAN DEFAULT FALSE,
+        verification_code TEXT,
+        reset_code TEXT,
+        code_expires_at TEXT
     )''')
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE;")
+        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_code TEXT;")
+        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_code TEXT;")
+        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS code_expires_at TEXT;")
+    except Exception as e:
+        pass
     conn.commit()
     conn.close()
 
@@ -472,60 +512,197 @@ def get_scans(device_id: str):
     return {"scans": scans, "total": len(scans)}
 
 @app.post("/register")
-def register(data: dict):
-    email = data.get("email", "")
+async def register(data: dict):
+    email = data.get("email", "").strip().lower()
     password = data.get("password", "")
-    name = data.get("name", "")
+    name = data.get("name", "").strip()
+    
     if not email or not password:
-        return {"error": "Email and password required"}
+        return {"error": "Email and password are required"}
+    if len(password) < 6:
+        return {"error": "Password must be at least 6 characters"}
+        
     hashed = hashlib.sha256(password.encode()).hexdigest()
-    try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("INSERT INTO users VALUES (%s, %s, %s, %s, %s)",
-            (str(uuid.uuid4()), email, hashed, name, datetime.now().isoformat()))
-        conn.commit()
-        conn.close()
-        return {"message": "Registered successfully"}
-    except Exception as e:
-        try:
+    otp = generate_otp()
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, is_verified FROM users WHERE email=%s", (email,))
+    existing = c.fetchone()
+    
+    if existing:
+        if existing[1]:  # already verified
             conn.close()
-        except:
-            pass
-        return {"error": "Email already exists"}
+            return {"error": "An account with this email already exists. Please log in."}
+        else:
+            # Update password and generate new OTP
+            c.execute("UPDATE users SET password=%s, name=%s, verification_code=%s WHERE email=%s",
+                      (hashed, name, otp, email))
+    else:
+        # Create new unverified user
+        c.execute("INSERT INTO users (id, email, password, name, created_at, is_verified, verification_code) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                  (str(uuid.uuid4()), email, hashed, name, datetime.now().isoformat(), False, otp))
+                  
+    conn.commit()
+    conn.close()
+    
+    html = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto; padding: 24px; border-radius: 12px; background: #ffffff; border: 1px solid #e5e7eb;">
+      <h2 style="color: #4B4FD9; text-align: center;">🛡️ SecureMe</h2>
+      <h3 style="color: #1a1a2e; text-align: center;">Verify Your Email</h3>
+      <p style="color: #6b7280; font-size: 14px; text-align: center;">Welcome to SecureMe! Use the 6-digit verification code below to activate your account:</p>
+      <div style="background: #EEF2FF; padding: 16px; border-radius: 8px; text-align: center; font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #4B4FD9; margin: 20px 0;">{otp}</div>
+      <p style="color: #9ca3af; font-size: 12px; text-align: center;">If you didn't create a SecureMe account, you can safely ignore this email.</p>
+    </div>
+    """
+    await send_resend_email(email, "Verify your SecureMe Account", html)
+    return {"message": "Verification code sent to your email", "email": email}
+
+@app.post("/verify-email")
+def verify_email(data: dict):
+    email = data.get("email", "").strip().lower()
+    code = data.get("code", "").strip()
+    
+    if not email or not code:
+        return {"error": "Email and verification code are required"}
+        
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, name, email, verification_code FROM users WHERE email=%s", (email,))
+    user = c.fetchone()
+    
+    if not user:
+        conn.close()
+        return {"error": "User not found"}
+        
+    if str(user[3]).strip() != code:
+        conn.close()
+        return {"error": "Invalid verification code. Please check your email and try again."}
+        
+    c.execute("UPDATE users SET is_verified=TRUE, verification_code=NULL WHERE email=%s", (email,))
+    conn.commit()
+    conn.close()
+    
+    return {
+        "message": "Email verified successfully!",
+        "user": {"id": user[0], "name": user[1], "email": user[2], "token": user[0]}
+    }
+
+@app.post("/resend-verification")
+async def resend_verification(data: dict):
+    email = data.get("email", "").strip().lower()
+    if not email:
+        return {"error": "Email is required"}
+        
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, is_verified FROM users WHERE email=%s", (email,))
+    user = c.fetchone()
+    
+    if not user:
+        conn.close()
+        return {"error": "User not found"}
+    if user[1]:
+        conn.close()
+        return {"error": "Account is already verified. Please log in."}
+        
+    otp = generate_otp()
+    c.execute("UPDATE users SET verification_code=%s WHERE email=%s", (otp, email))
+    conn.commit()
+    conn.close()
+    
+    html = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto; padding: 24px; border-radius: 12px; background: #ffffff; border: 1px solid #e5e7eb;">
+      <h2 style="color: #4B4FD9; text-align: center;">🛡️ SecureMe</h2>
+      <h3 style="color: #1a1a2e; text-align: center;">New Verification Code</h3>
+      <p style="color: #6b7280; font-size: 14px; text-align: center;">Here is your new 6-digit verification code:</p>
+      <div style="background: #EEF2FF; padding: 16px; border-radius: 8px; text-align: center; font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #4B4FD9; margin: 20px 0;">{otp}</div>
+    </div>
+    """
+    await send_resend_email(email, "Your SecureMe Verification Code", html)
+    return {"message": "New verification code sent to your email"}
 
 @app.post("/login")
 def login(data: dict):
-    email = data.get("email", "")
+    email = data.get("email", "").strip().lower()
     password = data.get("password", "")
     hashed = hashlib.sha256(password.encode()).hexdigest()
+    
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, name, email FROM users WHERE email=%s AND password=%s", (email, hashed))
+    c.execute("SELECT id, name, email, is_verified FROM users WHERE email=%s AND password=%s", (email, hashed))
     user = c.fetchone()
     conn.close()
+    
     if user:
+        # Check if email is verified
+        if not user[3]:
+            return {"error": "Please verify your email before logging in.", "needs_verification": True, "email": email}
         return {"id": user[0], "name": user[1], "email": user[2], "token": user[0]}
     return {"error": "Invalid email or password"}
 
 @app.post("/forgot-password")
 async def forgot_password(data: dict):
-    email = data.get("email", "")
+    email = data.get("email", "").strip().lower()
     if not email:
-        return {"error": "Email required"}
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.post(
-                "https://cyshlloaordhtsuktrzj.supabase.co/auth/v1/recover",
-                headers={
-                    "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN5c2hsbG9hb3JkaHRzdWt0cnpqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY1MDUyNjAsImV4cCI6MjEwMjA4MTI2MH0.3xbImQcXi-GjUMN5Y__4Qg5vdUtdLd9kohaxPyuu6Go",
-                    "Content-Type": "application/json"
-                },
-                json={"email": email}
-            )
-            return {"message": "If this email exists, a reset link has been sent."}
-    except:
-        return {"error": "Connection error"}
+        return {"error": "Email is required"}
+        
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT id FROM users WHERE email=%s", (email,))
+    user = c.fetchone()
+    
+    if not user:
+        conn.close()
+        return {"error": "No account found with this email address"}
+        
+    otp = generate_otp()
+    c.execute("UPDATE users SET reset_code=%s WHERE email=%s", (otp, email))
+    conn.commit()
+    conn.close()
+    
+    html = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto; padding: 24px; border-radius: 12px; background: #ffffff; border: 1px solid #e5e7eb;">
+      <h2 style="color: #4B4FD9; text-align: center;">🛡️ SecureMe</h2>
+      <h3 style="color: #1a1a2e; text-align: center;">Password Reset Request</h3>
+      <p style="color: #6b7280; font-size: 14px; text-align: center;">Use the 6-digit code below to reset your SecureMe password:</p>
+      <div style="background: #FEF2F2; padding: 16px; border-radius: 8px; text-align: center; font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #E53935; margin: 20px 0;">{otp}</div>
+      <p style="color: #9ca3af; font-size: 12px; text-align: center;">If you didn't request a password reset, you can safely ignore this email.</p>
+    </div>
+    """
+    await send_resend_email(email, "SecureMe Password Reset Code", html)
+    return {"message": "Password reset code sent to your email", "email": email}
+
+@app.post("/reset-password")
+def reset_password(data: dict):
+    email = data.get("email", "").strip().lower()
+    code = data.get("code", "").strip()
+    new_password = data.get("new_password", "")
+    
+    if not email or not code or not new_password:
+        return {"error": "Email, reset code, and new password are required"}
+    if len(new_password) < 6:
+        return {"error": "Password must be at least 6 characters"}
+        
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, reset_code FROM users WHERE email=%s", (email,))
+    user = c.fetchone()
+    
+    if not user or not user[1]:
+        conn.close()
+        return {"error": "No password reset requested for this email"}
+        
+    if str(user[1]).strip() != code:
+        conn.close()
+        return {"error": "Invalid reset code. Please check and try again."}
+        
+    hashed = hashlib.sha256(new_password.encode()).hexdigest()
+    c.execute("UPDATE users SET password=%s, reset_code=NULL, is_verified=TRUE WHERE email=%s", (hashed, email))
+    conn.commit()
+    conn.close()
+    
+    return {"message": "Password reset successful! You can now log in with your new password."}
 
 @app.get("/health")
 def health_check():
