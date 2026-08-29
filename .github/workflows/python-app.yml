@@ -25,10 +25,11 @@ jobs:
 
     - name: Run Tests
       run: |
-        pytest tests/
+        python -m pytest tests/
       env:
         DATABASE_URL: sqlite:///./test.db
         BREVO_API_KEY: ""
+        PYTHONPATH: .
 
     - name: Upload Test Reports
       uses: actions/upload-artifact@v4
