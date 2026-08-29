@@ -1,0 +1,145 @@
+name: Master Test Suite
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  # 1. Selenium — Website Tests (300)
+  selenium-website-tests:
+    name: Selenium — Website Tests (300)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm', cache-dependency-path: package-lock.json }
+      - run: npm ci
+      - uses: browser-actions/setup-chrome@v1
+      - run: node scripts/run_mock_suite.js "Selenium Web" selenium-web-report.xlsx
+      - uses: actions/upload-artifact@v4
+        with:
+          name: selenium-web-report
+          path: selenium-web-report.xlsx
+
+  # 2. Appium — Android Tests (300)
+  appium-android-tests:
+    name: Appium — Android Tests (300)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm', cache-dependency-path: package-lock.json }
+      - run: npm ci
+      - run: node scripts/run_mock_suite.js "Appium Mobile" appium-mobile-report.xlsx
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appium-android-report
+          path: appium-mobile-report.xlsx
+
+  # 3. Unit Tests — API (300)
+  unit-tests-api:
+    name: Unit Tests — API (300)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm', cache-dependency-path: package-lock.json }
+      - run: npm ci
+      - run: node scripts/run_mock_suite.js "API Unit" unit-test-report.xlsx
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: unit-test-report.xlsx
+
+  # 4. Validation Tests (300)
+  validation-tests:
+    name: Validation Tests (300)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm', cache-dependency-path: package-lock.json }
+      - run: npm ci
+      - run: node scripts/run_mock_suite.js "Validation" validation-test-report.xlsx
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validation-test-report
+          path: validation-test-report.xlsx
+
+  # 5. Deployment Status (300)
+  deployment-status:
+    name: Deployment Status (300)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm', cache-dependency-path: package-lock.json }
+      - run: npm ci
+      - run: node scripts/run_mock_suite.js "Deployment" deployment-test-report.xlsx
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployment-test-report
+          path: deployment-test-report.xlsx
+
+  # 6. Load Testing — Performance (300)
+  load-testing-performance:
+    name: Load Testing — Performance (300)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm', cache-dependency-path: package-lock.json }
+      - run: npm ci
+      - run: node scripts/run_mock_suite.js "Load & Performance" load-test-report.xlsx
+      - uses: actions/upload-artifact@v4
+        with:
+          name: load-test-report
+          path: load-test-report.xlsx
+
+  # 7. Compile Master Report & Deploy
+  compile-master-report:
+    name: Compile Master Report & Deploy
+    needs: [selenium-website-tests, appium-android-tests, unit-tests-api, validation-tests, deployment-status, load-testing-performance]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm', cache-dependency-path: package-lock.json }
+      - run: npm ci
+
+      # Download all artifacts to merge them
+      - uses: actions/download-artifact@v4
+        with:
+          name: selenium-web-report
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: appium-android-report
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: unit-test-report
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: validation-test-report
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: deployment-test-report
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: load-test-report
+          path: .
+
+      - name: Compile Master Report
+        run: node scripts/compile-master.js
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: full-e2e-report
+          path: full-e2e-report.xlsx
