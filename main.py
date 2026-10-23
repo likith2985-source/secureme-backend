@@ -21,8 +21,52 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
 BREVO_SENDER_EMAIL = os.getenv("BREVO_SENDER_EMAIL", "urikeney@gmail.com")
 
+class DBWrapper:
+    def __init__(self, conn, is_sqlite=False):
+        self.conn = conn
+        self.is_sqlite = is_sqlite
+
+    def cursor(self):
+        return DBCursor(self.conn.cursor(), self.is_sqlite)
+
+    def commit(self):
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
+
+class DBCursor:
+    def __init__(self, cur, is_sqlite=False):
+        self.cur = cur
+        self.is_sqlite = is_sqlite
+
+    def execute(self, sql, params=None):
+        if self.is_sqlite:
+            sql = sql.replace("%s", "?")
+            sql = re.sub(r'BOOLEAN\s+DEFAULT\s+TRUE', 'INTEGER DEFAULT 1', sql, flags=re.IGNORECASE)
+            sql = re.sub(r'BOOLEAN\s+DEFAULT\s+FALSE', 'INTEGER DEFAULT 0', sql, flags=re.IGNORECASE)
+        if params is not None:
+            return self.cur.execute(sql, params)
+        return self.cur.execute(sql)
+
+    def fetchone(self):
+        return self.cur.fetchone()
+
+    def fetchall(self):
+        return self.cur.fetchall()
+
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL, sslmode='require')
+    if DATABASE_URL:
+        try:
+            pg_conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=5)
+            return DBWrapper(pg_conn, is_sqlite=False)
+        except Exception as e:
+            # Fall back to local SQLite if Postgres is unavailable
+            pass
+    import sqlite3
+    db_path = os.path.join(os.path.dirname(__file__), "secureme.db")
+    sql_conn = sqlite3.connect(db_path)
+    return DBWrapper(sql_conn, is_sqlite=True)
 
 async def send_email(to_email: str, subject: str, html_body: str):
     if not BREVO_API_KEY:
@@ -70,7 +114,25 @@ def init_db():
         score INTEGER,
         status TEXT,
         details TEXT,
-        created_at TEXT
+        created_at TEXT,
+        user_id TEXT,
+        user_email TEXT
+    )''')
+    try:
+        c.execute("ALTER TABLE scan_results ADD COLUMN user_id TEXT")
+    except Exception:
+        pass
+    try:
+        c.execute("ALTER TABLE scan_results ADD COLUMN user_email TEXT")
+    except Exception:
+        pass
+
+    c.execute('''CREATE TABLE IF NOT EXISTS user_devices (
+        user_id TEXT,
+        email TEXT,
+        device_id TEXT,
+        last_seen TEXT,
+        PRIMARY KEY (email, device_id)
     )''')
     conn.commit()
     conn.close()
@@ -87,7 +149,8 @@ def init_auth_db():
         is_verified BOOLEAN DEFAULT TRUE,
         verification_code TEXT,
         reset_code TEXT,
-        code_expires_at TEXT
+        code_expires_at TEXT,
+        device_id TEXT
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS pending_registrations (
         email TEXT PRIMARY KEY,
@@ -97,11 +160,24 @@ def init_auth_db():
         created_at TEXT
     )''')
     try:
-        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT TRUE;")
-        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_code TEXT;")
-        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_code TEXT;")
-        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS code_expires_at TEXT;")
-    except Exception as e:
+        c.execute("ALTER TABLE users ADD COLUMN is_verified BOOLEAN DEFAULT TRUE;")
+    except Exception:
+        pass
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN verification_code TEXT;")
+    except Exception:
+        pass
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN reset_code TEXT;")
+    except Exception:
+        pass
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN code_expires_at TEXT;")
+    except Exception:
+        pass
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN device_id TEXT;")
+    except Exception:
         pass
     conn.commit()
     conn.close()
@@ -111,7 +187,7 @@ try:
     init_auth_db()
     print("Database tables initialized successfully.")
 except Exception as e:
-    print(f"Warning: Database initialization failed. Check your DATABASE_URL in .env. Error: {e}")
+    print(f"Warning: Database initialization failed. Check your database setup. Error: {e}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -491,6 +567,8 @@ def analyze_wifi(data: dict):
 @app.post("/save-scan")
 def save_scan(data: dict):
     device_id = data.get("device_id", "unknown")
+    user_id = data.get("user_id", "")
+    user_email = (data.get("user_email") or data.get("email", "")).strip().lower()
     scan_type = data.get("scan_type", "")
     score = data.get("score", 0)
     status = data.get("status", "")
@@ -501,18 +579,96 @@ def save_scan(data: dict):
     
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("INSERT INTO scan_results VALUES (%s, %s, %s, %s, %s, %s, %s)",
-              (scan_id, device_id, scan_type, score, status, str(details), created_at))
+
+    # If email wasn't provided, try looking up linked user from user_devices
+    if not user_email and device_id and device_id != "unknown":
+        try:
+            c.execute("SELECT email, user_id FROM user_devices WHERE device_id=%s ORDER BY last_seen DESC LIMIT 1", (device_id,))
+            match = c.fetchone()
+            if match:
+                user_email = match[0]
+                if not user_id and match[1]:
+                    user_id = match[1]
+        except Exception:
+            pass
+
+    # If email and device_id are both present, update user_devices mapping
+    if user_email and device_id and device_id != "unknown":
+        try:
+            if getattr(conn, 'is_sqlite', False):
+                c.execute("INSERT OR REPLACE INTO user_devices VALUES (%s, %s, %s, %s)", (user_id, user_email, device_id, created_at))
+            else:
+                c.execute("INSERT INTO user_devices (user_id, email, device_id, last_seen) VALUES (%s, %s, %s, %s) ON CONFLICT (email, device_id) DO UPDATE SET last_seen = EXCLUDED.last_seen", (user_id, user_email, device_id, created_at))
+        except Exception:
+            pass
+    
+    c.execute("INSERT INTO scan_results (id, device_id, scan_type, score, status, details, created_at, user_id, user_email) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+              (scan_id, device_id, scan_type, score, status, str(details), created_at, user_id, user_email))
     conn.commit()
     conn.close()
     
-    return {"id": scan_id, "message": "Scan saved successfully"}
+    return {"id": scan_id, "message": "Scan saved successfully", "user_email": user_email}
 
-@app.get("/get-scans/{device_id}")
-def get_scans(device_id: str):
+@app.post("/link-device")
+def link_device(data: dict):
+    email = data.get("email", "").strip().lower()
+    user_id = data.get("user_id", "")
+    device_id = data.get("device_id", "").strip()
+    if not email or not device_id:
+        return {"error": "Email and device_id are required"}
+    
+    now = datetime.now().isoformat()
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT * FROM scan_results WHERE device_id=%s ORDER BY created_at DESC LIMIT 20", (device_id,))
+    try:
+        if getattr(conn, 'is_sqlite', False):
+            c.execute("INSERT OR REPLACE INTO user_devices VALUES (%s, %s, %s, %s)", (user_id, email, device_id, now))
+        else:
+            c.execute("INSERT INTO user_devices (user_id, email, device_id, last_seen) VALUES (%s, %s, %s, %s) ON CONFLICT (email, device_id) DO UPDATE SET last_seen = EXCLUDED.last_seen", (user_id, email, device_id, now))
+        c.execute("UPDATE users SET device_id=%s WHERE email=%s", (device_id, email))
+        # Backfill past scans from this device
+        c.execute("UPDATE scan_results SET user_email=%s WHERE device_id=%s AND (user_email IS NULL OR user_email = '')", (email, device_id))
+        conn.commit()
+    except Exception as e:
+        print(f"Error linking device: {e}")
+    finally:
+        conn.close()
+    return {"message": "Device linked successfully", "email": email, "device_id": device_id}
+
+@app.get("/get-scans/{identifier}")
+def get_scans(identifier: str):
+    identifier = identifier.strip()
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    linked_devices = []
+    if "@" in identifier or len(identifier) > 20:
+        try:
+            c.execute("SELECT device_id FROM user_devices WHERE email=%s OR user_id=%s", (identifier.lower(), identifier))
+            for r in c.fetchall():
+                if r[0] and r[0] not in linked_devices:
+                    linked_devices.append(r[0])
+            c.execute("SELECT device_id FROM users WHERE email=%s OR id=%s", (identifier.lower(), identifier))
+            for r in c.fetchall():
+                if r[0] and r[0] not in linked_devices:
+                    linked_devices.append(r[0])
+        except Exception:
+            pass
+
+    query = """
+        SELECT id, device_id, scan_type, score, status, details, created_at, user_id, user_email 
+        FROM scan_results 
+        WHERE device_id = %s OR user_email = %s OR user_id = %s
+    """
+    params = [identifier, identifier.lower(), identifier]
+    if linked_devices:
+        placeholders = ", ".join(["%s"] * len(linked_devices))
+        query += f" OR device_id IN ({placeholders})"
+        params.extend(linked_devices)
+
+    query += " ORDER BY created_at DESC LIMIT 50"
+    
+    c.execute(query, tuple(params))
     rows = c.fetchall()
     conn.close()
     
@@ -525,10 +681,85 @@ def get_scans(device_id: str):
             "score": row[3],
             "status": row[4],
             "details": row[5],
-            "created_at": row[6]
+            "created_at": row[6],
+            "user_id": row[7] if len(row) > 7 else None,
+            "user_email": row[8] if len(row) > 8 else None
         })
     
     return {"scans": scans, "total": len(scans)}
+
+@app.get("/sync-user/{email}")
+def sync_user(email: str):
+    email = email.strip().lower()
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    user_info = None
+    device_id = None
+    try:
+        c.execute("SELECT id, name, email, device_id FROM users WHERE email=%s", (email,))
+        u = c.fetchone()
+        if u:
+            user_info = {"id": u[0], "name": u[1], "email": u[2]}
+            device_id = u[3]
+    except Exception:
+        pass
+        
+    try:
+        c.execute("SELECT device_id FROM user_devices WHERE email=%s ORDER BY last_seen DESC LIMIT 1", (email,))
+        d = c.fetchone()
+        if d and d[0]:
+            device_id = d[0]
+    except Exception:
+        pass
+
+    conn.close()
+
+    scans_res = get_scans(email)
+    scans = scans_res.get("scans", [])
+    
+    if not scans and device_id:
+        scans_res = get_scans(device_id)
+        scans = scans_res.get("scans", [])
+
+    total_scans = len(scans)
+    safe_scans = len([s for s in scans if (s.get("score") or 0) >= 75])
+    risks_found = len([s for s in scans if (s.get("score") or 0) < 75])
+
+    cyber_score = 100
+    cyber_status = "Optimal"
+    recommendations = []
+    
+    system_scan = next((s for s in scans if s.get("scan_type") == "Full System Scan"), None)
+    if system_scan:
+        cyber_score = system_scan.get("score", 100)
+        cyber_status = system_scan.get("status", "Optimal")
+        import json
+        try:
+            d_raw = system_scan.get("details", "{}")
+            d_parsed = json.loads(d_raw) if isinstance(d_raw, str) else d_raw
+            if isinstance(d_parsed, dict) and "recommendations" in d_parsed:
+                recommendations = d_parsed["recommendations"]
+        except Exception:
+            pass
+    elif scans:
+        scores = [s.get("score", 100) for s in scans if isinstance(s.get("score"), int)]
+        if scores:
+            cyber_score = round(sum(scores) / len(scores))
+            cyber_status = "Optimal" if cyber_score >= 80 else ("Moderate" if cyber_score >= 60 else "At Risk")
+
+    return {
+        "email": email,
+        "user": user_info,
+        "device_id": device_id,
+        "cyber_score": cyber_score,
+        "cyber_status": cyber_status,
+        "recommendations": recommendations,
+        "total_scans": total_scans,
+        "safe_scans": safe_scans,
+        "risks_found": risks_found,
+        "scans": scans
+    }
 
 @app.post("/register")
 async def register(data: dict):
@@ -654,19 +885,53 @@ async def resend_verification(data: dict):
 def login(data: dict):
     email = data.get("email", "").strip().lower()
     password = data.get("password", "")
+    device_id = data.get("device_id", "").strip()
     hashed = hashlib.sha256(password.encode()).hexdigest()
     
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, name, email, is_verified FROM users WHERE email=%s AND password=%s", (email, hashed))
+    c.execute("SELECT id, name, email, is_verified, device_id FROM users WHERE email=%s AND password=%s", (email, hashed))
     user = c.fetchone()
-    conn.close()
     
     if user:
-        # Check if email is verified
         if not user[3]:
+            conn.close()
             return {"error": "Please verify your email before logging in.", "needs_verification": True, "email": email}
-        return {"id": user[0], "name": user[1], "email": user[2], "token": user[0]}
+        
+        user_id = user[0]
+        now = datetime.now().isoformat()
+        linked_dev = device_id or user[4]
+        
+        if device_id:
+            try:
+                if getattr(conn, 'is_sqlite', False):
+                    c.execute("INSERT OR REPLACE INTO user_devices VALUES (%s, %s, %s, %s)", (user_id, email, device_id, now))
+                else:
+                    c.execute("INSERT INTO user_devices (user_id, email, device_id, last_seen) VALUES (%s, %s, %s, %s) ON CONFLICT (email, device_id) DO UPDATE SET last_seen = EXCLUDED.last_seen", (user_id, email, device_id, now))
+                c.execute("UPDATE users SET device_id=%s WHERE id=%s", (device_id, user_id))
+                c.execute("UPDATE scan_results SET user_email=%s, user_id=%s WHERE device_id=%s AND (user_email IS NULL OR user_email = '')", (email, user_id, device_id))
+                conn.commit()
+            except Exception as e:
+                print(f"Error mapping device in login: {e}")
+        
+        if not linked_dev:
+            try:
+                c.execute("SELECT device_id FROM user_devices WHERE email=%s ORDER BY last_seen DESC LIMIT 1", (email,))
+                r = c.fetchone()
+                if r and r[0]:
+                    linked_dev = r[0]
+            except Exception:
+                pass
+                
+        conn.close()
+        return {
+            "id": user[0],
+            "name": user[1],
+            "email": user[2],
+            "token": user[0],
+            "device_id": linked_dev
+        }
+    conn.close()
     return {"error": "Invalid email or password"}
 
 @app.post("/forgot-password")
