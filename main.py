@@ -32,8 +32,17 @@ class DBWrapper:
     def commit(self):
         self.conn.commit()
 
+    def rollback(self):
+        try:
+            self.conn.rollback()
+        except Exception:
+            pass
+
     def close(self):
-        self.conn.close()
+        try:
+            self.conn.close()
+        except Exception:
+            pass
 
 class DBCursor:
     def __init__(self, cur, is_sqlite=False):
@@ -104,6 +113,21 @@ async def send_email(to_email: str, subject: str, html_body: str):
 def generate_otp():
     return str(random.randint(100000, 999999))
 
+def safe_add_column(conn, table: str, col_name: str, col_type: str):
+    c = conn.cursor()
+    if getattr(conn, 'is_sqlite', False):
+        try:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+            conn.commit()
+        except Exception:
+            pass
+    else:
+        try:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
@@ -118,14 +142,9 @@ def init_db():
         user_id TEXT,
         user_email TEXT
     )''')
-    try:
-        c.execute("ALTER TABLE scan_results ADD COLUMN user_id TEXT")
-    except Exception:
-        pass
-    try:
-        c.execute("ALTER TABLE scan_results ADD COLUMN user_email TEXT")
-    except Exception:
-        pass
+    conn.commit()
+    safe_add_column(conn, "scan_results", "user_id", "TEXT")
+    safe_add_column(conn, "scan_results", "user_email", "TEXT")
 
     c.execute('''CREATE TABLE IF NOT EXISTS user_devices (
         user_id TEXT,
@@ -159,27 +178,12 @@ def init_auth_db():
         verification_code TEXT,
         created_at TEXT
     )''')
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN is_verified BOOLEAN DEFAULT TRUE;")
-    except Exception:
-        pass
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN verification_code TEXT;")
-    except Exception:
-        pass
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN reset_code TEXT;")
-    except Exception:
-        pass
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN code_expires_at TEXT;")
-    except Exception:
-        pass
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN device_id TEXT;")
-    except Exception:
-        pass
     conn.commit()
+    safe_add_column(conn, "users", "is_verified", "BOOLEAN DEFAULT TRUE")
+    safe_add_column(conn, "users", "verification_code", "TEXT")
+    safe_add_column(conn, "users", "reset_code", "TEXT")
+    safe_add_column(conn, "users", "code_expires_at", "TEXT")
+    safe_add_column(conn, "users", "device_id", "TEXT")
     conn.close()
 
 try:
@@ -883,56 +887,77 @@ async def resend_verification(data: dict):
 
 @app.post("/login")
 def login(data: dict):
-    email = data.get("email", "").strip().lower()
-    password = data.get("password", "")
-    device_id = data.get("device_id", "").strip()
-    hashed = hashlib.sha256(password.encode()).hexdigest()
-    
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT id, name, email, is_verified, device_id FROM users WHERE email=%s AND password=%s", (email, hashed))
-    user = c.fetchone()
-    
-    if user:
-        if not user[3]:
-            conn.close()
-            return {"error": "Please verify your email before logging in.", "needs_verification": True, "email": email}
+    try:
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "")
+        device_id = data.get("device_id", "").strip()
+        hashed = hashlib.sha256(password.encode()).hexdigest()
         
-        user_id = user[0]
-        now = datetime.now().isoformat()
-        linked_dev = device_id or user[4]
-        
-        if device_id:
+        conn = get_db_connection()
+        c = conn.cursor()
+        user = None
+        try:
+            c.execute("SELECT id, name, email, is_verified, device_id FROM users WHERE email=%s AND password=%s", (email, hashed))
+            user = c.fetchone()
+        except Exception:
+            conn.rollback()
             try:
-                if getattr(conn, 'is_sqlite', False):
-                    c.execute("INSERT OR REPLACE INTO user_devices VALUES (%s, %s, %s, %s)", (user_id, email, device_id, now))
-                else:
-                    c.execute("INSERT INTO user_devices (user_id, email, device_id, last_seen) VALUES (%s, %s, %s, %s) ON CONFLICT (email, device_id) DO UPDATE SET last_seen = EXCLUDED.last_seen", (user_id, email, device_id, now))
-                c.execute("UPDATE users SET device_id=%s WHERE id=%s", (device_id, user_id))
-                c.execute("UPDATE scan_results SET user_email=%s, user_id=%s WHERE device_id=%s AND (user_email IS NULL OR user_email = '')", (email, user_id, device_id))
-                conn.commit()
-            except Exception as e:
-                print(f"Error mapping device in login: {e}")
-        
-        if not linked_dev:
-            try:
-                c.execute("SELECT device_id FROM user_devices WHERE email=%s ORDER BY last_seen DESC LIMIT 1", (email,))
-                r = c.fetchone()
-                if r and r[0]:
-                    linked_dev = r[0]
+                c.execute("SELECT id, name, email, is_verified FROM users WHERE email=%s AND password=%s", (email, hashed))
+                u = c.fetchone()
+                user = (u[0], u[1], u[2], u[3], None) if u else None
             except Exception:
-                pass
-                
+                conn.rollback()
+        
+        if user:
+            if not user[3]:
+                conn.close()
+                return {"error": "Please verify your email before logging in.", "needs_verification": True, "email": email}
+            
+            user_id = user[0]
+            now = datetime.now().isoformat()
+            linked_dev = device_id or user[4]
+            
+            if device_id:
+                try:
+                    if getattr(conn, 'is_sqlite', False):
+                        c.execute("INSERT OR REPLACE INTO user_devices VALUES (%s, %s, %s, %s)", (user_id, email, device_id, now))
+                    else:
+                        c.execute("INSERT INTO user_devices (user_id, email, device_id, last_seen) VALUES (%s, %s, %s, %s) ON CONFLICT (email, device_id) DO UPDATE SET last_seen = EXCLUDED.last_seen", (user_id, email, device_id, now))
+                    try:
+                        c.execute("UPDATE users SET device_id=%s WHERE id=%s", (device_id, user_id))
+                    except Exception:
+                        conn.rollback()
+                    try:
+                        c.execute("UPDATE scan_results SET user_email=%s, user_id=%s WHERE device_id=%s AND (user_email IS NULL OR user_email = '')", (email, user_id, device_id))
+                    except Exception:
+                        conn.rollback()
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    print(f"Error mapping device in login: {e}")
+            
+            if not linked_dev:
+                try:
+                    c.execute("SELECT device_id FROM user_devices WHERE email=%s ORDER BY last_seen DESC LIMIT 1", (email,))
+                    r = c.fetchone()
+                    if r and r[0]:
+                        linked_dev = r[0]
+                except Exception:
+                    pass
+                    
+            conn.close()
+            return {
+                "id": user[0],
+                "name": user[1],
+                "email": user[2],
+                "token": user[0],
+                "device_id": linked_dev
+            }
         conn.close()
-        return {
-            "id": user[0],
-            "name": user[1],
-            "email": user[2],
-            "token": user[0],
-            "device_id": linked_dev
-        }
-    conn.close()
-    return {"error": "Invalid email or password"}
+        return {"error": "Invalid email or password"}
+    except Exception as e:
+        print(f"Unexpected error in login: {e}")
+        return {"error": f"Login service error: {str(e)}"}
 
 @app.post("/forgot-password")
 async def forgot_password(data: dict):
